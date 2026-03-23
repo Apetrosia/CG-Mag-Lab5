@@ -1,0 +1,25 @@
+{
+  "name": "cg-mag-lab5",
+  "version": "1.0.0",
+  "description": "1. Продемонстрировать bamp mapping на апельсинез\r     1. Загрузить шар (полигональная модель)\r     2. подобрать подходящую текстуру, чтобы апельсин был похож на апельсин\r     3. превратить в апельсин (используя bamp mapping)\r     4. использовать модель освещения или Фонга, или Блинна-Фонга",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "serve"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Apetrosia/CG-Mag-Lab5.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Apetrosia/CG-Mag-Lab5/issues"
+  },
+  "homepage": "https://github.com/Apetrosia/CG-Mag-Lab5#readme",
+  "devDependencies": {
+    "serve": "^14.2.6"
+  }
+}
