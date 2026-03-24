@@ -63,14 +63,14 @@ void main() {
 		mapNormal.xy *= uDetailStrength;
 		shadingNormal = normalize(tangent * mapNormal.x + bitangent * mapNormal.y + normal * mapNormal.z);
 	} else {
-		float hL = texture2D(uHeightMap, vUV - vec2(uHeightTexel.x, 0.0)).r;
-		float hR = texture2D(uHeightMap, vUV + vec2(uHeightTexel.x, 0.0)).r;
-		float hD = texture2D(uHeightMap, vUV - vec2(0.0, uHeightTexel.y)).r;
-		float hU = texture2D(uHeightMap, vUV + vec2(0.0, uHeightTexel.y)).r;
+		float hC = texture2D(uHeightMap, vUV).r;
+		float hU = texture2D(uHeightMap, vUV + vec2(uHeightTexel.x, 0.0)).r;
+		float hV = texture2D(uHeightMap, vUV + vec2(0.0, uHeightTexel.y)).r;
 
-		float dHdU = hR - hL;
-		float dHdV = hU - hD;
-		shadingNormal = normalize(normal + uDetailStrength * (dHdU * tangent + dHdV * bitangent));
+		float dHdU = (hC - hU) * uDetailStrength;
+		float dHdV = (hC - hV) * uDetailStrength;
+		vec3 bumpNormalTangent = normalize(vec3(dHdU, dHdV, 1.0));
+		shadingNormal = normalize(tangent * bumpNormalTangent.x + bitangent * bumpNormalTangent.y + normal * bumpNormalTangent.z);
 	}
 
 	vec3 lightDir = normalize(uLightPos - vWorldPos);
