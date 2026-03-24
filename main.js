@@ -123,27 +123,32 @@ function createProgram(glContext, vertexSource, fragmentSource) {
 	return program;
 }
 
-function perspective(out, fovy, aspect, near, far) {
-	const f = 1.0 / Math.tan(fovy / 2.0);
-	out[0] = f / aspect;
-	out[1] = 0;
-	out[2] = 0;
-	out[3] = 0;
+function multiplyMatrices(a, b) {
+	const out = new Float32Array(16);
 
-	out[4] = 0;
-	out[5] = f;
-	out[6] = 0;
-	out[7] = 0;
+	for (let col = 0; col < 4; col += 1) {
+		for (let row = 0; row < 4; row += 1) {
+			out[col * 4 + row] =
+				a[0 * 4 + row] * b[col * 4 + 0] +
+				a[1 * 4 + row] * b[col * 4 + 1] +
+				a[2 * 4 + row] * b[col * 4 + 2] +
+				a[3 * 4 + row] * b[col * 4 + 3];
+		}
+	}
 
-	out[8] = 0;
-	out[9] = 0;
-	out[10] = (far + near) / (near - far);
-	out[11] = -1;
+	return out;
+}
 
-	out[12] = 0;
-	out[13] = 0;
-	out[14] = (2 * far * near) / (near - far);
-	out[15] = 0;
+function createPerspectiveMatrix(fov, aspect, near, far) {
+	const f = 1.0 / Math.tan(fov / 2);
+	const nf = 1 / (near - far);
+
+	return new Float32Array([
+		f / aspect, 0, 0, 0,
+		0, f, 0, 0,
+		0, 0, (far + near) * nf, -1,
+		0, 0, (2 * far * near) * nf, 0
+	]);
 }
 
 function lookAt(out, eye, center, up) {
@@ -188,34 +193,62 @@ function lookAt(out, eye, center, up) {
 	out[15] = 1;
 }
 
-function identity4(out) {
-	out[0] = 1;
-	out[1] = 0;
-	out[2] = 0;
-	out[3] = 0;
-	out[4] = 0;
-	out[5] = 1;
-	out[6] = 0;
-	out[7] = 0;
-	out[8] = 0;
-	out[9] = 0;
-	out[10] = 1;
-	out[11] = 0;
-	out[12] = 0;
-	out[13] = 0;
-	out[14] = 0;
-	out[15] = 1;
-}
+function createTransformMatrix(
+	angleX = 0,
+	angleY = 0,
+	angleZ = 0,
+	scalex = 1,
+	scaley = 1,
+	scalez = 1,
+	tx = 0,
+	ty = 0,
+	tz = 0
+) {
+	const cx = Math.cos(angleX);
+	const sx = Math.sin(angleX);
+	const cy = Math.cos(angleY);
+	const sy = Math.sin(angleY);
+	const cz = Math.cos(angleZ);
+	const sz = Math.sin(angleZ);
 
-function rotateYScaled(out, rad, scale) {
-	const c = Math.cos(rad);
-	const s = Math.sin(rad);
-	identity4(out);
-	out[0] = c * scale;
-	out[2] = -s * scale;
-	out[5] = scale;
-	out[8] = s * scale;
-	out[10] = c * scale;
+	const rx = new Float32Array([
+		1, 0, 0, 0,
+		0, cx, sx, 0,
+		0, -sx, cx, 0,
+		0, 0, 0, 1
+	]);
+
+	const ry = new Float32Array([
+		cy, 0, -sy, 0,
+		0, 1, 0, 0,
+		sy, 0, cy, 0,
+		0, 0, 0, 1
+	]);
+
+	const rz = new Float32Array([
+		cz, sz, 0, 0,
+		-sz, cz, 0, 0,
+		0, 0, 1, 0,
+		0, 0, 0, 1
+	]);
+
+	const s = new Float32Array([
+		scalex, 0, 0, 0,
+		0, scaley, 0, 0,
+		0, 0, scalez, 0,
+		0, 0, 0, 1
+	]);
+
+	const rxy = multiplyMatrices(ry, rx);
+	const rxyz = multiplyMatrices(rz, rxy);
+	const rs = multiplyMatrices(rxyz, s);
+
+	rs[12] = tx;
+	rs[13] = ty;
+	rs[14] = tz;
+	rs[15] = 1;
+
+	return rs;
 }
 
 function mat3FromMat4(out, m) {
@@ -228,6 +261,10 @@ function mat3FromMat4(out, m) {
 	out[6] = m[8];
 	out[7] = m[9];
 	out[8] = m[10];
+}
+
+function clamp(value, min, max) {
+	return Math.max(min, Math.min(max, value));
 }
 
 function loadTexture(glContext, url, flipY = true) {
@@ -467,6 +504,7 @@ function createBuffer(glContext, target, data, usage) {
 }
 
 async function init() {
+	// MODELS
 	const [sphereObjText, cubeObjText] = await Promise.all([
 		fetch("models/sphere.obj").then((r) => {
 			if (!r.ok) {
@@ -528,6 +566,7 @@ async function init() {
 		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, meshBuffers.indexBuffer);
 	}
 
+	// TEXTURES
 	const [orangeDiffuse, orangeHeight, cubeDiffuse, cubeNormal] = await Promise.all([
 		loadTexture(gl, "textures/food_0022_color_1k.jpg"),
 		loadTexture(gl, "textures/food_0022_ao_1k.jpg"),
@@ -535,7 +574,7 @@ async function init() {
 		loadTexture(gl, "textures/DefaultMaterial_normal.png", false)
 	]);
 
-	const objects = {
+	const models = {
 		orange: {
 			mesh: createMeshBuffers(sphereMesh),
 			diffuseTexture: orangeDiffuse,
@@ -566,7 +605,7 @@ async function init() {
 		}
 	};
 
-	let activeObjectKey = "orange";
+	let activeModelKey = "orange";
 
 	const uModel = gl.getUniformLocation(program, "uModel");
 	const uView = gl.getUniformLocation(program, "uView");
@@ -621,84 +660,93 @@ async function init() {
 	lookAt(view, cameraPos, [0, 0, 0], [0, 1, 0]);
 	gl.uniformMatrix4fv(uView, false, view);
 
-	function applyActiveObjectState() {
-		const activeObject = objects[activeObjectKey];
+	function getActiveModel() {
+		return models[activeModelKey];
+	}
 
-		bindMeshBuffers(activeObject.mesh);
-
-		gl.activeTexture(gl.TEXTURE0);
-		gl.bindTexture(gl.TEXTURE_2D, activeObject.diffuseTexture);
-
-		gl.activeTexture(gl.TEXTURE1);
-		gl.bindTexture(gl.TEXTURE_2D, activeObject.heightTexture);
-
-		gl.activeTexture(gl.TEXTURE2);
-		gl.bindTexture(gl.TEXTURE_2D, activeObject.normalTexture);
-
-		gl.uniform1f(uUseNormalMap, activeObject.useNormalMap);
-		gl.uniform1f(uDetailStrength, activeObject.detailStrength);
-		gl.uniform2fv(uHeightTexel, activeObject.heightTexel);
-
+	function updateInfoText(activeModel) {
 		info.textContent =
 			"1: Апельсин (bump map) | 2: Куб (normal map) | Текущий: " +
-			activeObject.label +
+			activeModel.label +
 			" | Интенсивность: " +
-			activeObject.detailStrength.toFixed(2) +
+			activeModel.detailStrength.toFixed(2) +
 			" (" +
-			activeObject.minStrength.toFixed(1) +
+			activeModel.minStrength.toFixed(1) +
 			".." +
-			activeObject.maxStrength.toFixed(1) +
+			activeModel.maxStrength.toFixed(1) +
 			")";
 	}
 
-	applyActiveObjectState();
+	function applyActiveModel() {
+		const activeModel = getActiveModel();
 
-	// Keyboard controls for map intensity and active object.
-	window.addEventListener("keydown", (e) => {
+		bindMeshBuffers(activeModel.mesh);
+
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, activeModel.diffuseTexture);
+
+		gl.activeTexture(gl.TEXTURE1);
+		gl.bindTexture(gl.TEXTURE_2D, activeModel.heightTexture);
+
+		gl.activeTexture(gl.TEXTURE2);
+		gl.bindTexture(gl.TEXTURE_2D, activeModel.normalTexture);
+
+		gl.uniform1f(uUseNormalMap, activeModel.useNormalMap);
+		gl.uniform1f(uDetailStrength, activeModel.detailStrength);
+		gl.uniform2fv(uHeightTexel, activeModel.heightTexel);
+
+		updateInfoText(activeModel);
+	}
+
+	function changeActiveModel(nextKey) {
+		activeModelKey = nextKey;
+		applyActiveModel();
+	}
+
+	function changeDetailStrength(delta) {
+		const activeModel = getActiveModel();
+		activeModel.detailStrength = clamp(
+			activeModel.detailStrength + delta,
+			activeModel.minStrength,
+			activeModel.maxStrength
+		);
+		gl.uniform1f(uDetailStrength, activeModel.detailStrength);
+		updateInfoText(activeModel);
+		console.log("Detail strength:", activeModel.detailStrength.toFixed(2));
+	}
+
+	function handleKeyDown(e) {
 		if (e.key === "1") {
-			activeObjectKey = "orange";
-			applyActiveObjectState();
+			changeActiveModel("orange");
 		} else if (e.key === "2") {
-			activeObjectKey = "cube";
-			applyActiveObjectState();
+			changeActiveModel("cube");
 		} else if (e.key === "ArrowUp") {
-			const activeObject = objects[activeObjectKey];
-			activeObject.detailStrength = Math.min(
-				activeObject.maxStrength,
-				activeObject.detailStrength + activeObject.strengthStep
-			);
-			gl.uniform1f(uDetailStrength, activeObject.detailStrength);
-			applyActiveObjectState();
-			console.log("Detail strength:", activeObject.detailStrength.toFixed(2));
+			changeDetailStrength(getActiveModel().strengthStep);
 		} else if (e.key === "ArrowDown") {
-			const activeObject = objects[activeObjectKey];
-			activeObject.detailStrength = Math.max(
-				activeObject.minStrength,
-				activeObject.detailStrength - activeObject.strengthStep
-			);
-			gl.uniform1f(uDetailStrength, activeObject.detailStrength);
-			applyActiveObjectState();
-			console.log("Detail strength:", activeObject.detailStrength.toFixed(2));
+			changeDetailStrength(-getActiveModel().strengthStep);
 		}
-	});
+	}
+
+	applyActiveModel();
+	window.addEventListener("keydown", handleKeyDown);
 
 	function render(timeMs) {
 		resize();
 
 		const aspect = canvas.width / canvas.height;
-		perspective(projection, (45 * Math.PI) / 180, aspect, 0.1, 100.0);
+		projection.set(createPerspectiveMatrix((45 * Math.PI) / 180, aspect, 0.1, 100.0));
 		gl.uniformMatrix4fv(uProjection, false, projection);
 
 		const t = timeMs * 0.001;
-		const activeObject = objects[activeObjectKey];
-		rotateYScaled(model, t * 0.1, activeObject.scale);
+		const activeModel = getActiveModel();
+		model.set(createTransformMatrix(0, t * 0.1, 0, activeModel.scale, activeModel.scale, activeModel.scale));
 		gl.uniformMatrix4fv(uModel, false, model);
 
 		mat3FromMat4(normalMatrix, model);
 		gl.uniformMatrix3fv(uNormalMatrix, false, normalMatrix);
 
 		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-		gl.drawElements(gl.TRIANGLES, activeObject.mesh.indexCount, gl.UNSIGNED_SHORT, 0);
+		gl.drawElements(gl.TRIANGLES, activeModel.mesh.indexCount, gl.UNSIGNED_SHORT, 0);
 		requestAnimationFrame(render);
 	}
 
