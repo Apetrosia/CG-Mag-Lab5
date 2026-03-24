@@ -42,36 +42,45 @@ varying vec3 vTangent;
 
 uniform sampler2D uDiffuse;
 uniform sampler2D uHeightMap;
+uniform sampler2D uNormalMap;
 uniform vec3 uLightPos;
 uniform vec3 uViewPos;
 uniform vec3 uAmbientColor;
 uniform vec3 uLightColor;
 uniform float uShininess;
-uniform float uBumpStrength;
+uniform float uDetailStrength;
 uniform vec2 uHeightTexel;
+uniform float uUseNormalMap;
 
 void main() {
 	vec3 normal = normalize(vNormal);
 	vec3 tangent = normalize(vTangent - normal * dot(vTangent, normal));
 	vec3 bitangent = normalize(cross(normal, tangent));
 
-	float hL = texture2D(uHeightMap, vUV - vec2(uHeightTexel.x, 0.0)).r;
-	float hR = texture2D(uHeightMap, vUV + vec2(uHeightTexel.x, 0.0)).r;
-	float hD = texture2D(uHeightMap, vUV - vec2(0.0, uHeightTexel.y)).r;
-	float hU = texture2D(uHeightMap, vUV + vec2(0.0, uHeightTexel.y)).r;
+	vec3 shadingNormal;
+	if (uUseNormalMap > 0.5) {
+		vec3 mapNormal = texture2D(uNormalMap, vUV).rgb * 2.0 - 1.0;
+		mapNormal.xy *= uDetailStrength;
+		shadingNormal = normalize(tangent * mapNormal.x + bitangent * mapNormal.y + normal * mapNormal.z);
+	} else {
+		float hL = texture2D(uHeightMap, vUV - vec2(uHeightTexel.x, 0.0)).r;
+		float hR = texture2D(uHeightMap, vUV + vec2(uHeightTexel.x, 0.0)).r;
+		float hD = texture2D(uHeightMap, vUV - vec2(0.0, uHeightTexel.y)).r;
+		float hU = texture2D(uHeightMap, vUV + vec2(0.0, uHeightTexel.y)).r;
 
-	float dHdU = hR - hL;
-	float dHdV = hU - hD;
-	vec3 bumpedNormal = normalize(normal + uBumpStrength * (dHdU * tangent + dHdV * bitangent));
+		float dHdU = hR - hL;
+		float dHdV = hU - hD;
+		shadingNormal = normalize(normal + uDetailStrength * (dHdU * tangent + dHdV * bitangent));
+	}
 
 	vec3 lightDir = normalize(uLightPos - vWorldPos);
 	vec3 viewDir = normalize(uViewPos - vWorldPos);
-	vec3 reflectDir = reflect(-lightDir, bumpedNormal);
+	vec3 reflectDir = reflect(-lightDir, shadingNormal);
 
 	vec4 texColor = texture2D(uDiffuse, vUV);
 	vec3 ambient = uAmbientColor * texColor.rgb;
 
-	float diff = max(dot(bumpedNormal, lightDir), 0.0);
+	float diff = max(dot(shadingNormal, lightDir), 0.0);
 	vec3 diffuse = diff * texColor.rgb * uLightColor;
 
 	float spec = pow(max(dot(viewDir, reflectDir), 0.0), uShininess);
@@ -198,14 +207,15 @@ function identity4(out) {
 	out[15] = 1;
 }
 
-function rotateY(out, rad) {
+function rotateYScaled(out, rad, scale) {
 	const c = Math.cos(rad);
 	const s = Math.sin(rad);
 	identity4(out);
-	out[0] = c;
-	out[2] = -s;
-	out[8] = s;
-	out[10] = c;
+	out[0] = c * scale;
+	out[2] = -s * scale;
+	out[5] = scale;
+	out[8] = s * scale;
+	out[10] = c * scale;
 }
 
 function mat3FromMat4(out, m) {
@@ -220,7 +230,7 @@ function mat3FromMat4(out, m) {
 	out[8] = m[10];
 }
 
-function loadTexture(glContext, url) {
+function loadTexture(glContext, url, flipY = true) {
 	return new Promise((resolve, reject) => {
 		const texture = glContext.createTexture();
 		glContext.bindTexture(glContext.TEXTURE_2D, texture);
@@ -239,7 +249,7 @@ function loadTexture(glContext, url) {
 		const image = new Image();
 		image.onload = () => {
 			glContext.bindTexture(glContext.TEXTURE_2D, texture);
-			glContext.pixelStorei(glContext.UNPACK_FLIP_Y_WEBGL, true);
+			glContext.pixelStorei(glContext.UNPACK_FLIP_Y_WEBGL, flipY ? 1 : 0);
 			glContext.texImage2D(
 				glContext.TEXTURE_2D,
 				0,
@@ -457,52 +467,106 @@ function createBuffer(glContext, target, data, usage) {
 }
 
 async function init() {
-	const objText = await fetch("models/sphere.obj").then((r) => {
-		if (!r.ok) {
-			throw new Error("Не удалось загрузить OBJ: " + r.status);
-		}
-		return r.text();
-	});
+	const [sphereObjText, cubeObjText] = await Promise.all([
+		fetch("models/sphere.obj").then((r) => {
+			if (!r.ok) {
+				throw new Error("Не удалось загрузить sphere.obj: " + r.status);
+			}
+			return r.text();
+		}),
+		fetch("models/cube.obj").then((r) => {
+			if (!r.ok) {
+				throw new Error("Не удалось загрузить cube.obj: " + r.status);
+			}
+			return r.text();
+		})
+	]);
 
-	const mesh = parseOBJ(objText);
-	if (mesh.indices.length > 65535) {
+	const sphereMesh = parseOBJ(sphereObjText);
+	const cubeMesh = parseOBJ(cubeObjText);
+	if (sphereMesh.indices.length > 65535 || cubeMesh.indices.length > 65535) {
 		throw new Error("Слишком много индексов для Uint16, нужен OES_element_index_uint.");
 	}
 
 	const program = createProgram(gl, VERTEX_SHADER_SOURCE, FRAGMENT_SHADER_SOURCE);
 	gl.useProgram(program);
 
-	const positionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
-	const normalBuffer = createBuffer(gl, gl.ARRAY_BUFFER, mesh.normals, gl.STATIC_DRAW);
-	const uvBuffer = createBuffer(gl, gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW);
-	const tangentBuffer = createBuffer(gl, gl.ARRAY_BUFFER, mesh.tangents, gl.STATIC_DRAW);
-	const indexBuffer = createBuffer(gl, gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
-
 	const aPosition = gl.getAttribLocation(program, "aPosition");
 	const aNormal = gl.getAttribLocation(program, "aNormal");
 	const aUV = gl.getAttribLocation(program, "aUV");
 	const aTangent = gl.getAttribLocation(program, "aTangent");
 
-	gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 	gl.enableVertexAttribArray(aPosition);
-	gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
-
-	gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
 	gl.enableVertexAttribArray(aNormal);
-	gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
-
-	gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
 	gl.enableVertexAttribArray(aUV);
-	gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
-
-	gl.bindBuffer(gl.ARRAY_BUFFER, tangentBuffer);
 	gl.enableVertexAttribArray(aTangent);
-	gl.vertexAttribPointer(aTangent, 3, gl.FLOAT, false, 0, 0);
 
-	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+	function createMeshBuffers(mesh) {
+		return {
+			positionBuffer: createBuffer(gl, gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW),
+			normalBuffer: createBuffer(gl, gl.ARRAY_BUFFER, mesh.normals, gl.STATIC_DRAW),
+			uvBuffer: createBuffer(gl, gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW),
+			tangentBuffer: createBuffer(gl, gl.ARRAY_BUFFER, mesh.tangents, gl.STATIC_DRAW),
+			indexBuffer: createBuffer(gl, gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW),
+			indexCount: mesh.indices.length
+		};
+	}
 
-	const texture = await loadTexture(gl, "textures/food_0022_color_1k.jpg");
-	const heightTexture = await loadTexture(gl, "textures/food_0022_ao_1k.jpg");
+	function bindMeshBuffers(meshBuffers) {
+		gl.bindBuffer(gl.ARRAY_BUFFER, meshBuffers.positionBuffer);
+		gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ARRAY_BUFFER, meshBuffers.normalBuffer);
+		gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ARRAY_BUFFER, meshBuffers.uvBuffer);
+		gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ARRAY_BUFFER, meshBuffers.tangentBuffer);
+		gl.vertexAttribPointer(aTangent, 3, gl.FLOAT, false, 0, 0);
+
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, meshBuffers.indexBuffer);
+	}
+
+	const [orangeDiffuse, orangeHeight, cubeDiffuse, cubeNormal] = await Promise.all([
+		loadTexture(gl, "textures/food_0022_color_1k.jpg"),
+		loadTexture(gl, "textures/food_0022_ao_1k.jpg"),
+		loadTexture(gl, "textures/DefaultMaterial_albedo.jpeg", false),
+		loadTexture(gl, "textures/DefaultMaterial_normal.png", false)
+	]);
+
+	const objects = {
+		orange: {
+			mesh: createMeshBuffers(sphereMesh),
+			diffuseTexture: orangeDiffuse,
+			heightTexture: orangeHeight,
+			normalTexture: cubeNormal,
+			useNormalMap: 0.0,
+			heightTexel: new Float32Array([1 / 1024, 1 / 1024]),
+			detailStrength: 3.0,
+			minStrength: 0.0,
+			maxStrength: 6.0,
+			strengthStep: 0.2,
+			scale: 1.0,
+			label: "Апельсин (bump map)"
+		},
+		cube: {
+			mesh: createMeshBuffers(cubeMesh),
+			diffuseTexture: cubeDiffuse,
+			heightTexture: orangeHeight,
+			normalTexture: cubeNormal,
+			useNormalMap: 1.0,
+			heightTexel: new Float32Array([1 / 1024, 1 / 1024]),
+			detailStrength: 1.0,
+			minStrength: 0.0,
+			maxStrength: 3.0,
+			strengthStep: 0.1,
+			scale: 0.7,
+			label: "Куб (normal map)"
+		}
+	};
+
+	let activeObjectKey = "orange";
 
 	const uModel = gl.getUniformLocation(program, "uModel");
 	const uView = gl.getUniformLocation(program, "uView");
@@ -510,13 +574,15 @@ async function init() {
 	const uNormalMatrix = gl.getUniformLocation(program, "uNormalMatrix");
 	const uDiffuse = gl.getUniformLocation(program, "uDiffuse");
 	const uHeightMap = gl.getUniformLocation(program, "uHeightMap");
+	const uNormalMap = gl.getUniformLocation(program, "uNormalMap");
 	const uLightPos = gl.getUniformLocation(program, "uLightPos");
 	const uViewPos = gl.getUniformLocation(program, "uViewPos");
 	const uAmbientColor = gl.getUniformLocation(program, "uAmbientColor");
 	const uLightColor = gl.getUniformLocation(program, "uLightColor");
 	const uShininess = gl.getUniformLocation(program, "uShininess");
-	const uBumpStrength = gl.getUniformLocation(program, "uBumpStrength");
+	const uDetailStrength = gl.getUniformLocation(program, "uDetailStrength");
 	const uHeightTexel = gl.getUniformLocation(program, "uHeightTexel");
+	const uUseNormalMap = gl.getUniformLocation(program, "uUseNormalMap");
 
 	const model = new Float32Array(16);
 	const view = new Float32Array(16);
@@ -543,34 +609,76 @@ async function init() {
 	gl.enable(gl.DEPTH_TEST);
 	gl.clearColor(0.05, 0.06, 0.09, 1.0);
 
-	gl.activeTexture(gl.TEXTURE0);
-	gl.bindTexture(gl.TEXTURE_2D, texture);
 	gl.uniform1i(uDiffuse, 0);
-	gl.activeTexture(gl.TEXTURE1);
-	gl.bindTexture(gl.TEXTURE_2D, heightTexture);
 	gl.uniform1i(uHeightMap, 1);
+	gl.uniform1i(uNormalMap, 2);
 	gl.uniform3fv(uLightPos, lightPos);
 	gl.uniform3fv(uViewPos, cameraPos);
 	gl.uniform3fv(uAmbientColor, new Float32Array([0.2, 0.2, 0.2]));
 	gl.uniform3fv(uLightColor, new Float32Array([1.0, 1.0, 1.0]));
 	gl.uniform1f(uShininess, 48.0);
-	let bumpStrength = 3.0;
-	gl.uniform1f(uBumpStrength, bumpStrength);
-	gl.uniform2fv(uHeightTexel, new Float32Array([1 / 1024, 1 / 1024]));
 
 	lookAt(view, cameraPos, [0, 0, 0], [0, 1, 0]);
 	gl.uniformMatrix4fv(uView, false, view);
 
-	// Keyboard controls for bump strength
+	function applyActiveObjectState() {
+		const activeObject = objects[activeObjectKey];
+
+		bindMeshBuffers(activeObject.mesh);
+
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, activeObject.diffuseTexture);
+
+		gl.activeTexture(gl.TEXTURE1);
+		gl.bindTexture(gl.TEXTURE_2D, activeObject.heightTexture);
+
+		gl.activeTexture(gl.TEXTURE2);
+		gl.bindTexture(gl.TEXTURE_2D, activeObject.normalTexture);
+
+		gl.uniform1f(uUseNormalMap, activeObject.useNormalMap);
+		gl.uniform1f(uDetailStrength, activeObject.detailStrength);
+		gl.uniform2fv(uHeightTexel, activeObject.heightTexel);
+
+		info.textContent =
+			"1: Апельсин (bump map) | 2: Куб (normal map) | Текущий: " +
+			activeObject.label +
+			" | Интенсивность: " +
+			activeObject.detailStrength.toFixed(2) +
+			" (" +
+			activeObject.minStrength.toFixed(1) +
+			".." +
+			activeObject.maxStrength.toFixed(1) +
+			")";
+	}
+
+	applyActiveObjectState();
+
+	// Keyboard controls for map intensity and active object.
 	window.addEventListener("keydown", (e) => {
-		if (e.key === "ArrowUp") {
-			bumpStrength += 0.2;
-			gl.uniform1f(uBumpStrength, bumpStrength);
-			console.log("Bump strength:", bumpStrength.toFixed(2));
+		if (e.key === "1") {
+			activeObjectKey = "orange";
+			applyActiveObjectState();
+		} else if (e.key === "2") {
+			activeObjectKey = "cube";
+			applyActiveObjectState();
+		} else if (e.key === "ArrowUp") {
+			const activeObject = objects[activeObjectKey];
+			activeObject.detailStrength = Math.min(
+				activeObject.maxStrength,
+				activeObject.detailStrength + activeObject.strengthStep
+			);
+			gl.uniform1f(uDetailStrength, activeObject.detailStrength);
+			applyActiveObjectState();
+			console.log("Detail strength:", activeObject.detailStrength.toFixed(2));
 		} else if (e.key === "ArrowDown") {
-			bumpStrength = Math.max(0, bumpStrength - 0.2);
-			gl.uniform1f(uBumpStrength, bumpStrength);
-			console.log("Bump strength:", bumpStrength.toFixed(2));
+			const activeObject = objects[activeObjectKey];
+			activeObject.detailStrength = Math.max(
+				activeObject.minStrength,
+				activeObject.detailStrength - activeObject.strengthStep
+			);
+			gl.uniform1f(uDetailStrength, activeObject.detailStrength);
+			applyActiveObjectState();
+			console.log("Detail strength:", activeObject.detailStrength.toFixed(2));
 		}
 	});
 
@@ -582,18 +690,18 @@ async function init() {
 		gl.uniformMatrix4fv(uProjection, false, projection);
 
 		const t = timeMs * 0.001;
-		rotateY(model, t * 0.1);
+		const activeObject = objects[activeObjectKey];
+		rotateYScaled(model, t * 0.1, activeObject.scale);
 		gl.uniformMatrix4fv(uModel, false, model);
 
 		mat3FromMat4(normalMatrix, model);
 		gl.uniformMatrix3fv(uNormalMatrix, false, normalMatrix);
 
 		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-		gl.drawElements(gl.TRIANGLES, mesh.indices.length, gl.UNSIGNED_SHORT, 0);
+		gl.drawElements(gl.TRIANGLES, activeObject.mesh.indexCount, gl.UNSIGNED_SHORT, 0);
 		requestAnimationFrame(render);
 	}
 
-	info.textContent = "Phong + bump mapping (AO): food_0022_ao_1k.jpg | Use ↑↓ arrows to adjust bump intensity";
 	requestAnimationFrame(render);
 }
 
